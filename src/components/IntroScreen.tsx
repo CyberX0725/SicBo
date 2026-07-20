@@ -1,4 +1,4 @@
-import introImage from '@/assets/intro.svg';
+import introImage from '@/assets/intro.jpg';
 
 interface IntroScreenProps {
   onStart: () => void;
