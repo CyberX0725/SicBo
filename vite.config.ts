@@ -4,7 +4,7 @@ import tsconfigPaths from "vite-tsconfig-paths";
 
 // https://vite.dev/config/
 export default defineConfig({
-  // GitHub Pages 部署需要设置 base 为仓库名
+  // GitHub Pages Deploy from a branch 需要设置 base 为 '/SicBo/'
   base: '/SicBo/',
   build: {
     sourcemap: 'hidden',
