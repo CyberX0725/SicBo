@@ -4,7 +4,7 @@ name: Deploy to GitHub Pages
 on:
   # 在推送到 main 分支时触发
   push:
-    branches: ['main']
+    branches: ["main"]
   # 允许从 Actions 选项卡手动触发
   workflow_dispatch:
 
@@ -17,7 +17,7 @@ permissions:
 # 只允许一个并发部署，跳过正在运行和最新排队之间的运行队列
 # 但是，不要取消正在进行的运行，因为我们希望让这些生产部署完成
 concurrency:
-  group: 'pages'
+  group: "pages"
   cancel-in-progress: true
 
 jobs:
@@ -34,8 +34,8 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: "20"
+          cache: "npm"
 
       - name: Install dependencies
         run: npm ci
@@ -52,7 +52,7 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           # 上传 dist 文件夹
-          path: './dist'
+          path: "./dist"
 
       - name: Deploy to GitHub Pages
         id: deployment
