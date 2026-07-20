@@ -5,10 +5,10 @@ import tsconfigPaths from "vite-tsconfig-paths";
 // https://vite.dev/config/
 export default defineConfig({
   // GitHub Pages 部署需要设置 base 为仓库名
-  // 本地开发时 vite dev 会自动处理
-  base: process.env.NODE_ENV === 'production' ? '/SicBo/' : '/',
+  base: '/SicBo/',
   build: {
     sourcemap: 'hidden',
+    outDir: 'dist',
   },
   plugins: [
     react({
@@ -19,5 +19,5 @@ export default defineConfig({
       },
     }),
     tsconfigPaths()
-  ],
+  ]
 })
