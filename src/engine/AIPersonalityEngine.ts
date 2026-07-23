@@ -146,10 +146,12 @@ export function interpretNNByPersonality(
 
   // ===== 第二步：选择下注类型 =====
 
-  // 检查是否押特殊下注（围骰、对子、点数）
-  const chooseExotic = Math.random() < prefs.exoticBetProb;
+  // 根据权重决定押大小还是高赔率（理性选择）
+  const totalWeight = prefs.highPayoutWeight + prefs.lowRiskWeight;
+  const chooseHighPayout = totalWeight > 0 &&
+    Math.random() < (prefs.highPayoutWeight / totalWeight);
 
-  if (!chooseExotic) {
+  if (!chooseHighPayout || total < 5) {
     // 押大小（理性选择：NN概率更高的方向）
     const chooseBig = nnBigProb > nnSmallProb;
 
@@ -166,17 +168,15 @@ export function interpretNNByPersonality(
         });
       }
     }
-  }
-
-  if (chooseExotic && total >= 5) {
-    // 押高赔率（围骰、对子、点数）
+  } else {
+    // 押高赔率（围骰、对子、点数）- 理性博冷
     const highPayoutOptions = [
       { type: BetType.TRIPLE, label: '全圍骰', prob: nnProbs[5], payout: 24 },
       { type: BetType.SPECIFIC_TRIPLE, label: '围骰', prob: nnProbs[5] / 6, payout: 150 },
       { type: BetType.DOUBLE, label: '对子', prob: nnProbs[3], payout: 8 },
     ];
 
-    // 根据NN概率选择
+    // 根据NN概率选择，但要符合置信度和期望收益要求
     const validOptions = highPayoutOptions.filter(opt =>
       opt.prob >= prefs.confidenceThreshold * 0.5 &&
       expectedValue(opt.prob, opt.payout) >= prefs.expectedValueThreshold * 0.5
