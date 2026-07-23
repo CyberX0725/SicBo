@@ -109,7 +109,7 @@ export function interpretNNByPersonality(
   history: DiceResult[],
   balance: number,
   aggressiveness: number = 50, // 经典人格的激进程度 0-100
-  existingBets?: Map<string, BetType>, // 其他玩家已下注情况（用于差异化决策）
+  existingBetsInfo?: { type: BetType; target?: number; subTarget?: number[] }[] // 其他玩家已下注情况
 ): BetDecision[] {
   const personality = AI_PERSONALITIES[personalityId];
 
@@ -147,47 +147,126 @@ export function interpretNNByPersonality(
 
   // ===== 第二步：选择下注类型 =====
 
-  // 默认选择：NN概率更高的方向
-  let chooseBig = nnBigProb > nnSmallProb;
+  // 根据权重决定押大小还是高赔率
+  const totalWeight = prefs.highPayoutWeight + prefs.lowRiskWeight;
+  const chooseHighPayout = totalWeight > 0 &&
+    Math.random() < (prefs.highPayoutWeight / totalWeight);
 
-  // 差异化逻辑：如果发现太多人押同一个方向，有概率换押
-  if (existingBets && existingBets.size > 0) {
-    // 统计押大和押小的人数
-    let bigCount = 0;
-    let smallCount = 0;
-    existingBets.forEach((betType) => {
-      if (betType === BetType.BIG) bigCount++;
-      if (betType === BetType.SMALL) smallCount++;
-    });
+  if (!chooseHighPayout || total < 5) {
+    // 押大小（理性选择：NN概率更高的方向）
+    let chooseBig = nnBigProb > nnSmallProb;
 
-    // 如果NN推荐押大，但已经有很多人押大，有概率换押
-    if (chooseBig && bigCount > 0) {
-      // 换押概率：每个押大的人增加15%概率
-      const switchProb = Math.min(0.8, bigCount * 0.15);
-      if (Math.random() < switchProb) {
-        chooseBig = false; // 换押小
+    // 差异化逻辑：如果发现太多人押同一个方向，有概率换押
+    if (existingBetsInfo && existingBetsInfo.length > 0) {
+      const bigCount = existingBetsInfo.filter(b => b.type === BetType.BIG).length;
+      const smallCount = existingBetsInfo.filter(b => b.type === BetType.SMALL).length;
+
+      // 如果NN推荐押大，但已经有很多人押大，有概率换押
+      if (chooseBig && bigCount > 0) {
+        const switchProb = Math.min(0.8, bigCount * 0.15);
+        if (Math.random() < switchProb) {
+          chooseBig = false; // 换押小
+        }
+      }
+      // 如果NN推荐押小，但已经有很多人押小，有概率换押
+      else if (!chooseBig && smallCount > 0) {
+        const switchProb = Math.min(0.8, smallCount * 0.15);
+        if (Math.random() < switchProb) {
+          chooseBig = true; // 换押大
+        }
       }
     }
-    // 如果NN推荐押小，但已经有很多人押小，有概率换押
-    else if (!chooseBig && smallCount > 0) {
-      const switchProb = Math.min(0.8, smallCount * 0.15);
-      if (Math.random() < switchProb) {
-        chooseBig = true; // 换押大
+
+    const chosenProb = chooseBig ? nnBigProb : nnSmallProb;
+    if (chosenProb >= prefs.confidenceThreshold) {
+      const chosenEV = chooseBig ? bigEV : smallEV;
+      if (chosenEV >= prefs.expectedValueThreshold) {
+        bets.push({
+          type: chooseBig ? BetType.BIG : BetType.SMALL,
+          label: chooseBig ? '大' : '小',
+          amount: 0,
+        });
       }
     }
-  }
+  } else {
+    // 押高赔率（围骰、对子）- 差异化逻辑
+    const highPayoutOptions = [
+      { type: BetType.TRIPLE, label: '全圍骰', prob: nnProbs[5], payout: 24, target: undefined },
+      { type: BetType.SPECIFIC_TRIPLE, label: '围骰', prob: nnProbs[5] / 6, payout: 150, target: Math.floor(Math.random() * 6) + 1 },
+      { type: BetType.DOUBLE, label: '对子', prob: nnProbs[3], payout: 8, target: Math.floor(Math.random() * 6) + 1 },
+    ];
 
-  // 押大小（理性选择：NN概率更高的方向，或换押后的方向）
-  const chosenProb = chooseBig ? nnBigProb : nnSmallProb;
-  if (chosenProb >= prefs.confidenceThreshold) {
-    // 检查期望收益阈值
-    const chosenEV = chooseBig ? bigEV : smallEV;
-    if (chosenEV >= prefs.expectedValueThreshold) {
-      bets.push({
-        type: chooseBig ? BetType.BIG : BetType.SMALL,
-        label: chooseBig ? '大' : '小',
-        amount: 0, // 金额稍后计算
-      });
+    // 过滤：符合置信度和期望收益要求
+    const validOptions = highPayoutOptions.filter(opt =>
+      opt.prob >= prefs.confidenceThreshold * 0.5 &&
+      expectedValue(opt.prob, opt.payout) >= prefs.expectedValueThreshold * 0.5
+    );
+
+    if (validOptions.length > 0) {
+      // 差异化逻辑：检查已有下注情况
+      if (existingBetsInfo && existingBetsInfo.length > 0) {
+        // 统计每种高赔率下注的重复次数
+        const tripleCount = existingBetsInfo.filter(b => b.type === BetType.TRIPLE).length;
+        const specTripleCounts: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
+        const doubleCounts: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
+
+        existingBetsInfo.forEach(b => {
+          if (b.type === BetType.SPECIFIC_TRIPLE && b.target) {
+            specTripleCounts[b.target]++;
+          }
+          if (b.type === BetType.DOUBLE && b.target) {
+            doubleCounts[b.target]++;
+          }
+        });
+
+        // 根据已有下注情况，调整选择概率
+        // 对于围骰：如果某个围骰已经有很多人押，降低选择它的概率
+        const adjustedOptions = validOptions.map(opt => {
+          let penalty = 1;
+          if (opt.type === BetType.TRIPLE) {
+            penalty = 1 - tripleCount * 0.2; // 每个已押的人降低20%权重
+          } else if (opt.type === BetType.SPECIFIC_TRIPLE && opt.target) {
+            const count = specTripleCounts[opt.target] || 0;
+            penalty = 1 - count * 0.3; // 每个已押的人降低30%权重
+          } else if (opt.type === BetType.DOUBLE && opt.target) {
+            const count = doubleCounts[opt.target] || 0;
+            penalty = 1 - count * 0.3; // 每个已押的人降低30%权重
+          }
+          return { ...opt, weight: Math.max(0.1, penalty) };
+        });
+
+        // 按调整后的权重随机选择
+        const totalWeight = adjustedOptions.reduce((s, o) => s + o.weight, 0);
+        let rand = Math.random() * totalWeight;
+        for (const opt of adjustedOptions) {
+          rand -= opt.weight;
+          if (rand <= 0) {
+            bets.push({
+              type: opt.type,
+              target: opt.target,
+              label: opt.target ? `${opt.label} ${opt.target}` : opt.label,
+              amount: 0,
+            });
+            break;
+          }
+        }
+      } else {
+        // 没有已有下注，按概率随机选择
+        const totalProb = validOptions.reduce((s, o) => s + o.prob, 0);
+        let rand = Math.random() * totalProb;
+        for (const opt of validOptions) {
+          rand -= opt.prob;
+          if (rand <= 0) {
+            bets.push({
+              type: opt.type,
+              target: opt.target,
+              label: opt.target ? `${opt.label} ${opt.target}` : opt.label,
+              amount: 0,
+            });
+            break;
+          }
+        }
+      }
     }
   }
 

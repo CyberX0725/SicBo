@@ -39,18 +39,26 @@ let betCounter = 0;
 
 /**
  * 构建已有下注情况（用于差异化决策）
- * 只统计大小类型，因为其他类型赌桌不同位置太多
+ * 统计所有下注类型及其具体目标
  */
-function buildExistingBetsMap(players: Player[]): Map<string, BetType> {
-  const map = new Map<string, BetType>();
+interface ExistingBetInfo {
+  type: BetType;
+  target?: number;
+  subTarget?: number[];
+}
+
+function buildExistingBetsInfo(players: Player[]): ExistingBetInfo[] {
+  const list: ExistingBetInfo[] = [];
   players.forEach(p => {
     p.currentBets.forEach(bet => {
-      if (bet.type === BetType.BIG || bet.type === BetType.SMALL) {
-        map.set(`${p.id}_${bet.type}`, bet.type);
-      }
+      list.push({
+        type: bet.type,
+        target: bet.target,
+        subTarget: bet.subTarget,
+      });
     });
   });
-  return map;
+  return list;
 }
 
 /**
@@ -60,7 +68,7 @@ function getAIBets(
   player: Player,
   lastResults: DiceResult[],
   chipValues: readonly number[],
-  existingBets?: Map<string, BetType>
+  existingBetsInfo?: ExistingBetInfo[]
 ): BetDecision[] {
   const personalityId = player.personality || 'classic';
   const aggressiveness = player.aggressiveness ?? 50;
@@ -72,7 +80,7 @@ function getAIBets(
     lastResults,
     player.balance,
     aggressiveness,
-    existingBets
+    existingBetsInfo
   );
 }
 
@@ -120,8 +128,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
         // AI必须下注：余额>=10就必须下注
         if (aiPlayer.balance >= 10) {
           // 构建已有下注情况（用于差异化决策）
-          const existingBets = buildExistingBetsMap(s.players);
-          const aiBets = getAIBets(aiPlayer, s.lastResults, CHIP_VALUES, existingBets);
+          const existingBetsInfo = buildExistingBetsInfo(s.players);
+          const aiBets = getAIBets(aiPlayer, s.lastResults, CHIP_VALUES, existingBetsInfo);
           const players = [...s.players];
           const p = { ...players[s.activePlayerIndex] };
           const newBets: Bet[] = [];
@@ -258,8 +266,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
         // AI必须下注：余额>=10就必须下注
         if (aiPlayer.balance >= 10) {
           // 构建已有下注情况（用于差异化决策）
-          const existingBets = buildExistingBetsMap(s.players);
-          const aiBets = getAIBets(aiPlayer, s.lastResults, CHIP_VALUES, existingBets);
+          const existingBetsInfo = buildExistingBetsInfo(s.players);
+          const aiBets = getAIBets(aiPlayer, s.lastResults, CHIP_VALUES, existingBetsInfo);
           const players = [...s.players];
           const p = { ...players[s.activePlayerIndex] };
           const newBets: Bet[] = [];
@@ -400,8 +408,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
         // AI必须下注
         // 构建已有下注情况（用于差异化决策）
-        const existingBets = buildExistingBetsMap(s.players);
-        const aiBets = getAIBets(aiPlayer, s.lastResults, CHIP_VALUES, existingBets);
+        const existingBetsInfo = buildExistingBetsInfo(s.players);
+        const aiBets = getAIBets(aiPlayer, s.lastResults, CHIP_VALUES, existingBetsInfo);
         const players2 = [...s.players];
         const p = { ...players2[s.activePlayerIndex] };
         const newBets: Bet[] = [];
