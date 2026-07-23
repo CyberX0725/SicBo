@@ -153,7 +153,7 @@ export function interpretNNByPersonality(
     Math.random() < (prefs.highPayoutWeight / totalWeight);
 
   if (!chooseHighPayout || total < 5) {
-    // 押大小（理性选择：NN概率更高的方向）
+    // ===== 押低风险类型（大小、单双）=====
     let chooseBig = nnBigProb > nnSmallProb;
 
     // 差异化逻辑：如果发现太多人押同一个方向，有概率换押
@@ -161,18 +161,15 @@ export function interpretNNByPersonality(
       const bigCount = existingBetsInfo.filter(b => b.type === BetType.BIG).length;
       const smallCount = existingBetsInfo.filter(b => b.type === BetType.SMALL).length;
 
-      // 如果NN推荐押大，但已经有很多人押大，有概率换押
       if (chooseBig && bigCount > 0) {
         const switchProb = Math.min(0.8, bigCount * 0.15);
         if (Math.random() < switchProb) {
-          chooseBig = false; // 换押小
+          chooseBig = false;
         }
-      }
-      // 如果NN推荐押小，但已经有很多人押小，有概率换押
-      else if (!chooseBig && smallCount > 0) {
+      } else if (!chooseBig && smallCount > 0) {
         const switchProb = Math.min(0.8, smallCount * 0.15);
         if (Math.random() < switchProb) {
-          chooseBig = true; // 换押大
+          chooseBig = true;
         }
       }
     }
@@ -189,49 +186,117 @@ export function interpretNNByPersonality(
       }
     }
   } else {
-    // 押高赔率（围骰、对子）- 差异化逻辑
-    const highPayoutOptions = [
-      { type: BetType.TRIPLE, label: '全圍骰', prob: nnProbs[5], payout: 24, target: undefined },
-      { type: BetType.SPECIFIC_TRIPLE, label: '围骰', prob: nnProbs[5] / 6, payout: 150, target: Math.floor(Math.random() * 6) + 1 },
-      { type: BetType.DOUBLE, label: '对子', prob: nnProbs[3], payout: 8, target: Math.floor(Math.random() * 6) + 1 },
-    ];
+    // ===== 押高赔率类型（点数、围骰、对子、单骰、组合）=====
+
+    // 构建所有高赔率选项
+    interface HighPayoutOption {
+      type: BetType;
+      label: string;
+      prob: number;
+      payout: number;
+      target?: number;
+      subTarget?: number[];
+    }
+
+    const highPayoutOptions: HighPayoutOption[] = [];
+
+    // 1. 点数（4-17）
+    for (let sum = 4; sum <= 17; sum++) {
+      const sumProb = nnProbs[4] || 0.1; // NN预测的点数概率
+      const sumPayout = sum === 4 || sum === 17 ? 50 :
+                        sum === 5 || sum === 16 ? 18 :
+                        sum === 6 || sum === 15 ? 14 :
+                        sum === 7 || sum === 14 ? 12 :
+                        sum === 8 || sum === 13 ? 8 :
+                        sum === 9 || sum === 12 ? 6 :
+                        sum === 10 || sum === 11 ? 6 : 6;
+      highPayoutOptions.push({
+        type: BetType.SPECIFIC_SUM,
+        label: `点数${sum}`,
+        prob: sumProb / 14,
+        payout: sumPayout,
+        target: sum,
+      });
+    }
+
+    // 2. 全围骰
+    highPayoutOptions.push({
+      type: BetType.TRIPLE,
+      label: '全圍骰',
+      prob: nnProbs[5] || 0.05,
+      payout: 24,
+    });
+
+    // 3. 特定围骰（1-6）
+    for (let num = 1; num <= 6; num++) {
+      highPayoutOptions.push({
+        type: BetType.SPECIFIC_TRIPLE,
+        label: `围骰${num}`,
+        prob: (nnProbs[5] || 0.05) / 6,
+        payout: 150,
+        target: num,
+      });
+    }
+
+    // 4. 对子（1-6）
+    for (let num = 1; num <= 6; num++) {
+      highPayoutOptions.push({
+        type: BetType.DOUBLE,
+        label: `对子${num}`,
+        prob: nnProbs[3] || 0.15,
+        payout: 8,
+        target: num,
+      });
+    }
+
+    // 5. 单骰（某个骰子出现某数字）
+    for (let num = 1; num <= 6; num++) {
+      highPayoutOptions.push({
+        type: BetType.SINGLE_NUMBER,
+        label: `单骰${num}`,
+        prob: 0.5, // 约有一半概率出现
+        payout: 1,
+        target: num,
+      });
+    }
+
+    // 6. 两个特定骰子组合
+    for (let num1 = 1; num1 <= 6; num1++) {
+      for (let num2 = num1; num2 <= 6; num2++) {
+        highPayoutOptions.push({
+          type: BetType.COMBINATION,
+          label: `组合${num1}${num2}`,
+          prob: 0.08,
+          payout: 5,
+          subTarget: [num1, num2],
+        });
+      }
+    }
 
     // 过滤：符合置信度和期望收益要求
     const validOptions = highPayoutOptions.filter(opt =>
-      opt.prob >= prefs.confidenceThreshold * 0.5 &&
-      expectedValue(opt.prob, opt.payout) >= prefs.expectedValueThreshold * 0.5
+      opt.prob >= prefs.confidenceThreshold * 0.3 &&
+      expectedValue(opt.prob, opt.payout) >= prefs.expectedValueThreshold * 0.3
     );
 
     if (validOptions.length > 0) {
       // 差异化逻辑：检查已有下注情况
       if (existingBetsInfo && existingBetsInfo.length > 0) {
-        // 统计每种高赔率下注的重复次数
-        const tripleCount = existingBetsInfo.filter(b => b.type === BetType.TRIPLE).length;
-        const specTripleCounts: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
-        const doubleCounts: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
+        // 统计每种下注的重复次数
+        const betCounts: Map<string, number> = new Map();
 
         existingBetsInfo.forEach(b => {
-          if (b.type === BetType.SPECIFIC_TRIPLE && b.target) {
-            specTripleCounts[b.target]++;
-          }
-          if (b.type === BetType.DOUBLE && b.target) {
-            doubleCounts[b.target]++;
-          }
+          // 构建唯一标识：类型+目标+子目标
+          const key = `${b.type}_${b.target || ''}_${(b.subTarget || []).join(',')}`;
+          betCounts.set(key, (betCounts.get(key) || 0) + 1);
         });
 
-        // 根据已有下注情况，调整选择概率
-        // 对于围骰：如果某个围骰已经有很多人押，降低选择它的概率
+        // 根据已有下注情况，调整选择权重
         const adjustedOptions = validOptions.map(opt => {
-          let penalty = 1;
-          if (opt.type === BetType.TRIPLE) {
-            penalty = 1 - tripleCount * 0.2; // 每个已押的人降低20%权重
-          } else if (opt.type === BetType.SPECIFIC_TRIPLE && opt.target) {
-            const count = specTripleCounts[opt.target] || 0;
-            penalty = 1 - count * 0.3; // 每个已押的人降低30%权重
-          } else if (opt.type === BetType.DOUBLE && opt.target) {
-            const count = doubleCounts[opt.target] || 0;
-            penalty = 1 - count * 0.3; // 每个已押的人降低30%权重
-          }
+          const key = `${opt.type}_${opt.target || ''}_${(opt.subTarget || []).join(',')}`;
+          const count = betCounts.get(key) || 0;
+          // 每个已押的人降低30%权重
+          const penalty = 1 - count * 0.3;
           return { ...opt, weight: Math.max(0.1, penalty) };
         });
 
@@ -244,7 +309,8 @@ export function interpretNNByPersonality(
             bets.push({
               type: opt.type,
               target: opt.target,
-              label: opt.target ? `${opt.label} ${opt.target}` : opt.label,
+              subTarget: opt.subTarget,
+              label: opt.label,
               amount: 0,
             });
             break;
@@ -260,7 +326,8 @@ export function interpretNNByPersonality(
             bets.push({
               type: opt.type,
               target: opt.target,
-              label: opt.target ? `${opt.label} ${opt.target}` : opt.label,
+              subTarget: opt.subTarget,
+              label: opt.label,
               amount: 0,
             });
             break;
