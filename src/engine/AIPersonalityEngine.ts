@@ -109,6 +109,7 @@ export function interpretNNByPersonality(
   history: DiceResult[],
   balance: number,
   aggressiveness: number = 50, // 经典人格的激进程度 0-100
+  existingBets?: Map<string, BetType>, // 其他玩家已下注情况（用于差异化决策）
 ): BetDecision[] {
   const personality = AI_PERSONALITIES[personalityId];
 
@@ -146,67 +147,47 @@ export function interpretNNByPersonality(
 
   // ===== 第二步：选择下注类型 =====
 
-  // 根据权重决定押大小还是高赔率（理性选择）
-  const totalWeight = prefs.highPayoutWeight + prefs.lowRiskWeight;
-  const chooseHighPayout = totalWeight > 0 &&
-    Math.random() < (prefs.highPayoutWeight / totalWeight);
+  // 默认选择：NN概率更高的方向
+  let chooseBig = nnBigProb > nnSmallProb;
 
-  if (!chooseHighPayout || total < 5) {
-    // 押大小（理性选择：NN概率更高的方向）
-    const chooseBig = nnBigProb > nnSmallProb;
+  // 差异化逻辑：如果发现太多人押同一个方向，有概率换押
+  if (existingBets && existingBets.size > 0) {
+    // 统计押大和押小的人数
+    let bigCount = 0;
+    let smallCount = 0;
+    existingBets.forEach((betType) => {
+      if (betType === BetType.BIG) bigCount++;
+      if (betType === BetType.SMALL) smallCount++;
+    });
 
-    // 检查置信度阈值
-    const chosenProb = chooseBig ? nnBigProb : nnSmallProb;
-    if (chosenProb >= prefs.confidenceThreshold) {
-      // 检查期望收益阈值
-      const chosenEV = chooseBig ? bigEV : smallEV;
-      if (chosenEV >= prefs.expectedValueThreshold) {
-        bets.push({
-          type: chooseBig ? BetType.BIG : BetType.SMALL,
-          label: chooseBig ? '大' : '小',
-          amount: 0, // 金额稍后计算
-        });
+    // 如果NN推荐押大，但已经有很多人押大，有概率换押
+    if (chooseBig && bigCount > 0) {
+      // 换押概率：每个押大的人增加15%概率
+      const switchProb = Math.min(0.8, bigCount * 0.15);
+      if (Math.random() < switchProb) {
+        chooseBig = false; // 换押小
       }
     }
-  } else {
-    // 押高赔率（围骰、对子、点数）- 理性博冷
-    const highPayoutOptions = [
-      { type: BetType.TRIPLE, label: '全圍骰', prob: nnProbs[5], payout: 24 },
-      { type: BetType.SPECIFIC_TRIPLE, label: '围骰', prob: nnProbs[5] / 6, payout: 150 },
-      { type: BetType.DOUBLE, label: '对子', prob: nnProbs[3], payout: 8 },
-    ];
-
-    // 根据NN概率选择，但要符合置信度和期望收益要求
-    const validOptions = highPayoutOptions.filter(opt =>
-      opt.prob >= prefs.confidenceThreshold * 0.5 &&
-      expectedValue(opt.prob, opt.payout) >= prefs.expectedValueThreshold * 0.5
-    );
-
-    if (validOptions.length > 0) {
-      // 按概率加权随机选择
-      const totalProb = validOptions.reduce((s, o) => s + o.prob, 0);
-      let rand = Math.random() * totalProb;
-      for (const opt of validOptions) {
-        rand -= opt.prob;
-        if (rand <= 0) {
-          let target: number | undefined;
-          if (opt.type === BetType.SPECIFIC_TRIPLE) {
-            target = Math.floor(Math.random() * 6) + 1;
-          } else if (opt.type === BetType.DOUBLE && total >= 5) {
-            // 选择热号对子
-            const numFreq: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
-            history.forEach(r => r.dice.forEach(d => { numFreq[d]++; }));
-            target = Number(Object.entries(numFreq).sort((a, b) => b[1] - a[1])[0][0]);
-          }
-          bets.push({
-            type: opt.type,
-            target,
-            label: target ? `${opt.label} ${target}` : opt.label,
-            amount: 0,
-          });
-          break;
-        }
+    // 如果NN推荐押小，但已经有很多人押小，有概率换押
+    else if (!chooseBig && smallCount > 0) {
+      const switchProb = Math.min(0.8, smallCount * 0.15);
+      if (Math.random() < switchProb) {
+        chooseBig = true; // 换押大
       }
+    }
+  }
+
+  // 押大小（理性选择：NN概率更高的方向，或换押后的方向）
+  const chosenProb = chooseBig ? nnBigProb : nnSmallProb;
+  if (chosenProb >= prefs.confidenceThreshold) {
+    // 检查期望收益阈值
+    const chosenEV = chooseBig ? bigEV : smallEV;
+    if (chosenEV >= prefs.expectedValueThreshold) {
+      bets.push({
+        type: chooseBig ? BetType.BIG : BetType.SMALL,
+        label: chooseBig ? '大' : '小',
+        amount: 0, // 金额稍后计算
+      });
     }
   }
 
