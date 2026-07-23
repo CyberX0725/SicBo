@@ -147,62 +147,40 @@ export function interpretNNByPersonality(
 
   // ===== 第二步：选择下注类型 =====
 
-  // 根据权重决定押大小还是高赔率
-  const totalWeight = prefs.highPayoutWeight + prefs.lowRiskWeight;
-  const chooseHighPayout = totalWeight > 0 &&
-    Math.random() < (prefs.highPayoutWeight / totalWeight);
+  // 构建所有可能的下注选项（包含NN概率）
+  interface BetOption {
+    type: BetType;
+    label: string;
+    prob: number;  // NN预测概率
+    payout: number;
+    target?: number;
+    subTarget?: number[];
+    baseWeight: number; // 基础权重（考虑人格偏好）
+  }
 
-  if (!chooseHighPayout || total < 5) {
-    // ===== 押低风险类型（大小、单双）=====
-    let chooseBig = nnBigProb > nnSmallProb;
+  const allOptions: BetOption[] = [];
 
-    // 差异化逻辑：如果发现太多人押同一个方向，有概率换押
-    if (existingBetsInfo && existingBetsInfo.length > 0) {
-      const bigCount = existingBetsInfo.filter(b => b.type === BetType.BIG).length;
-      const smallCount = existingBetsInfo.filter(b => b.type === BetType.SMALL).length;
+  // 1. 大小（NN概率）
+  allOptions.push({
+    type: BetType.BIG,
+    label: '大',
+    prob: nnBigProb,
+    payout: 1,
+    baseWeight: prefs.lowRiskWeight,
+  });
+  allOptions.push({
+    type: BetType.SMALL,
+    label: '小',
+    prob: nnSmallProb,
+    payout: 1,
+    baseWeight: prefs.lowRiskWeight,
+  });
 
-      if (chooseBig && bigCount > 0) {
-        const switchProb = Math.min(0.8, bigCount * 0.15);
-        if (Math.random() < switchProb) {
-          chooseBig = false;
-        }
-      } else if (!chooseBig && smallCount > 0) {
-        const switchProb = Math.min(0.8, smallCount * 0.15);
-        if (Math.random() < switchProb) {
-          chooseBig = true;
-        }
-      }
-    }
-
-    const chosenProb = chooseBig ? nnBigProb : nnSmallProb;
-    if (chosenProb >= prefs.confidenceThreshold) {
-      const chosenEV = chooseBig ? bigEV : smallEV;
-      if (chosenEV >= prefs.expectedValueThreshold) {
-        bets.push({
-          type: chooseBig ? BetType.BIG : BetType.SMALL,
-          label: chooseBig ? '大' : '小',
-          amount: 0,
-        });
-      }
-    }
-  } else {
-    // ===== 押高赔率类型（点数、围骰、对子、单骰、组合）=====
-
-    // 构建所有高赔率选项
-    interface HighPayoutOption {
-      type: BetType;
-      label: string;
-      prob: number;
-      payout: number;
-      target?: number;
-      subTarget?: number[];
-    }
-
-    const highPayoutOptions: HighPayoutOption[] = [];
-
-    // 1. 点数（4-17）
+  // 只有历史足够长才押高赔率
+  if (total >= 5) {
+    // 2. 点数（4-17）
     for (let sum = 4; sum <= 17; sum++) {
-      const sumProb = nnProbs[4] || 0.1; // NN预测的点数概率
+      const sumProb = nnProbs[4] || 0.1;
       const sumPayout = sum === 4 || sum === 17 ? 50 :
                         sum === 5 || sum === 16 ? 18 :
                         sum === 6 || sum === 15 ? 14 :
@@ -210,130 +188,116 @@ export function interpretNNByPersonality(
                         sum === 8 || sum === 13 ? 8 :
                         sum === 9 || sum === 12 ? 6 :
                         sum === 10 || sum === 11 ? 6 : 6;
-      highPayoutOptions.push({
+      allOptions.push({
         type: BetType.SPECIFIC_SUM,
         label: `点数${sum}`,
         prob: sumProb / 14,
         payout: sumPayout,
         target: sum,
+        baseWeight: prefs.highPayoutWeight,
       });
     }
 
-    // 2. 全围骰
-    highPayoutOptions.push({
+    // 3. 全围骰
+    allOptions.push({
       type: BetType.TRIPLE,
       label: '全圍骰',
       prob: nnProbs[5] || 0.05,
       payout: 24,
+      baseWeight: prefs.highPayoutWeight,
     });
 
-    // 3. 特定围骰（1-6）
+    // 4. 特定围骰（1-6）
     for (let num = 1; num <= 6; num++) {
-      highPayoutOptions.push({
+      allOptions.push({
         type: BetType.SPECIFIC_TRIPLE,
         label: `围骰${num}`,
         prob: (nnProbs[5] || 0.05) / 6,
         payout: 150,
         target: num,
+        baseWeight: prefs.highPayoutWeight,
       });
     }
 
-    // 4. 对子（1-6）
+    // 5. 对子（1-6）
     for (let num = 1; num <= 6; num++) {
-      highPayoutOptions.push({
+      allOptions.push({
         type: BetType.DOUBLE,
         label: `对子${num}`,
         prob: nnProbs[3] || 0.15,
         payout: 8,
         target: num,
+        baseWeight: prefs.highPayoutWeight,
       });
     }
 
-    // 5. 单骰（某个骰子出现某数字）
+    // 6. 单骰（某个骰子出现某数字）
     for (let num = 1; num <= 6; num++) {
-      highPayoutOptions.push({
+      allOptions.push({
         type: BetType.SINGLE_NUMBER,
         label: `单骰${num}`,
-        prob: 0.5, // 约有一半概率出现
+        prob: 0.5,
         payout: 1,
         target: num,
+        baseWeight: prefs.highPayoutWeight * 0.5,
       });
     }
 
-    // 6. 两个特定骰子组合
+    // 7. 两个特定骰子组合
     for (let num1 = 1; num1 <= 6; num1++) {
       for (let num2 = num1; num2 <= 6; num2++) {
-        highPayoutOptions.push({
+        allOptions.push({
           type: BetType.COMBINATION,
           label: `组合${num1}${num2}`,
           prob: 0.08,
           payout: 5,
           subTarget: [num1, num2],
+          baseWeight: prefs.highPayoutWeight * 0.3,
         });
       }
     }
+  }
 
-    // 过滤：符合置信度和期望收益要求
-    const validOptions = highPayoutOptions.filter(opt =>
-      opt.prob >= prefs.confidenceThreshold * 0.3 &&
-      expectedValue(opt.prob, opt.payout) >= prefs.expectedValueThreshold * 0.3
-    );
+  // 过滤：符合置信度和期望收益要求
+  const validOptions = allOptions.filter(opt =>
+    opt.prob >= prefs.confidenceThreshold * 0.3 &&
+    expectedValue(opt.prob, opt.payout) >= prefs.expectedValueThreshold * 0.3
+  );
 
-    if (validOptions.length > 0) {
-      // 差异化逻辑：检查已有下注情况
-      if (existingBetsInfo && existingBetsInfo.length > 0) {
-        // 统计每种下注的重复次数
-        const betCounts: Map<string, number> = new Map();
+  if (validOptions.length > 0) {
+    // 统计已有下注的重复次数
+    const betCounts: Map<string, number> = new Map();
+    if (existingBetsInfo && existingBetsInfo.length > 0) {
+      existingBetsInfo.forEach(b => {
+        const key = `${b.type}_${b.target || ''}_${(b.subTarget || []).join(',')}`;
+        betCounts.set(key, (betCounts.get(key) || 0) + 1);
+      });
+    }
 
-        existingBetsInfo.forEach(b => {
-          // 构建唯一标识：类型+目标+子目标
-          const key = `${b.type}_${b.target || ''}_${(b.subTarget || []).join(',')}`;
-          betCounts.set(key, (betCounts.get(key) || 0) + 1);
-        });
+    // 计算每个选项的最终权重 = NN概率 × 基础权重 × 已有下注惩罚
+    const weightedOptions = validOptions.map(opt => {
+      const key = `${opt.type}_${opt.target || ''}_${(opt.subTarget || []).join(',')}`;
+      const existingCount = betCounts.get(key) || 0;
+      // 每个已押的人降低30%权重
+      const penalty = Math.max(0.1, 1 - existingCount * 0.3);
+      // 最终权重 = NN概率 × 基础权重 × 惩罚
+      const finalWeight = opt.prob * opt.baseWeight * penalty;
+      return { ...opt, finalWeight, existingCount };
+    });
 
-        // 根据已有下注情况，调整选择权重
-        const adjustedOptions = validOptions.map(opt => {
-          const key = `${opt.type}_${opt.target || ''}_${(opt.subTarget || []).join(',')}`;
-          const count = betCounts.get(key) || 0;
-          // 每个已押的人降低30%权重
-          const penalty = 1 - count * 0.3;
-          return { ...opt, weight: Math.max(0.1, penalty) };
-        });
+    // 按最终权重从高到低排序（理性选择：优先选择权重最高的）
+    weightedOptions.sort((a, b) => b.finalWeight - a.finalWeight);
 
-        // 按调整后的权重随机选择
-        const totalWeight = adjustedOptions.reduce((s, o) => s + o.weight, 0);
-        let rand = Math.random() * totalWeight;
-        for (const opt of adjustedOptions) {
-          rand -= opt.weight;
-          if (rand <= 0) {
-            bets.push({
-              type: opt.type,
-              target: opt.target,
-              subTarget: opt.subTarget,
-              label: opt.label,
-              amount: 0,
-            });
-            break;
-          }
-        }
-      } else {
-        // 没有已有下注，按概率随机选择
-        const totalProb = validOptions.reduce((s, o) => s + o.prob, 0);
-        let rand = Math.random() * totalProb;
-        for (const opt of validOptions) {
-          rand -= opt.prob;
-          if (rand <= 0) {
-            bets.push({
-              type: opt.type,
-              target: opt.target,
-              subTarget: opt.subTarget,
-              label: opt.label,
-              amount: 0,
-            });
-            break;
-          }
-        }
-      }
+    // 选择权重最高的选项
+    const bestOption = weightedOptions[0];
+    if (bestOption) {
+      bets.push({
+        type: bestOption.type,
+        target: bestOption.target,
+        subTarget: bestOption.subTarget,
+        label: bestOption.label,
+        amount: 0,
+      });
     }
   }
 
