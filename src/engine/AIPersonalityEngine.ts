@@ -109,7 +109,6 @@ export function interpretNNByPersonality(
   history: DiceResult[],
   balance: number,
   aggressiveness: number = 50, // 经典人格的激进程度 0-100
-  existingBetsInfo?: { type: BetType; target?: number; subTarget?: number[] }[] // 其他玩家已下注情况
 ): BetDecision[] {
   const personality = AI_PERSONALITIES[personalityId];
 
@@ -147,157 +146,67 @@ export function interpretNNByPersonality(
 
   // ===== 第二步：选择下注类型 =====
 
-  // 构建所有可能的下注选项（包含NN概率）
-  interface BetOption {
-    type: BetType;
-    label: string;
-    prob: number;  // NN预测概率
-    payout: number;
-    target?: number;
-    subTarget?: number[];
-    baseWeight: number; // 基础权重（考虑人格偏好）
-  }
+  // 检查是否押特殊下注（围骰、对子、点数）
+  const chooseExotic = Math.random() < prefs.exoticBetProb;
 
-  const allOptions: BetOption[] = [];
+  if (!chooseExotic) {
+    // 押大小（理性选择：NN概率更高的方向）
+    const chooseBig = nnBigProb > nnSmallProb;
 
-  // 1. 大小（NN概率）- 权重降低，避免过度集中
-  allOptions.push({
-    type: BetType.BIG,
-    label: '大',
-    prob: nnBigProb,
-    payout: 1,
-    baseWeight: prefs.lowRiskWeight * 0.5, // 降低权重，让其他类型有机会
-  });
-  allOptions.push({
-    type: BetType.SMALL,
-    label: '小',
-    prob: nnSmallProb,
-    payout: 1,
-    baseWeight: prefs.lowRiskWeight * 0.5,
-  });
-
-  // 只有历史足够长才押高赔率
-  if (total >= 5) {
-    // 2. 点数（4-17）- 权重降低
-    for (let sum = 4; sum <= 17; sum++) {
-      const sumProb = nnProbs[4] || 0.1;
-      const sumPayout = sum === 4 || sum === 17 ? 50 :
-                        sum === 5 || sum === 16 ? 18 :
-                        sum === 6 || sum === 15 ? 14 :
-                        sum === 7 || sum === 14 ? 12 :
-                        sum === 8 || sum === 13 ? 8 :
-                        sum === 9 || sum === 12 ? 6 :
-                        sum === 10 || sum === 11 ? 6 : 6;
-      allOptions.push({
-        type: BetType.SPECIFIC_SUM,
-        label: `点数${sum}`,
-        prob: sumProb / 14,
-        payout: sumPayout,
-        target: sum,
-        baseWeight: prefs.highPayoutWeight * 0.5, // 降低权重
-      });
-    }
-
-    // 3. 全围骰 - 提升权重
-    allOptions.push({
-      type: BetType.TRIPLE,
-      label: '全圍骰',
-      prob: nnProbs[5] || 0.05,
-      payout: 24,
-      baseWeight: prefs.highPayoutWeight * 2.0, // 提升权重（赔率高）
-    });
-
-    // 4. 特定围骰（1-6）- 提升权重
-    for (let num = 1; num <= 6; num++) {
-      allOptions.push({
-        type: BetType.SPECIFIC_TRIPLE,
-        label: `围骰${num}`,
-        prob: (nnProbs[5] || 0.05) / 6,
-        payout: 150,
-        target: num,
-        baseWeight: prefs.highPayoutWeight * 3.0, // 大幅提升权重（赔率极高）
-      });
-    }
-
-    // 5. 对子（1-6）- 提升权重
-    for (let num = 1; num <= 6; num++) {
-      allOptions.push({
-        type: BetType.DOUBLE,
-        label: `对子${num}`,
-        prob: nnProbs[3] || 0.15,
-        payout: 8,
-        target: num,
-        baseWeight: prefs.highPayoutWeight * 1.5, // 提升权重
-      });
-    }
-
-    // 6. 单骰（某个骰子出现某数字）
-    for (let num = 1; num <= 6; num++) {
-      allOptions.push({
-        type: BetType.SINGLE_NUMBER,
-        label: `单骰${num}`,
-        prob: 0.5,
-        payout: 1,
-        target: num,
-        baseWeight: prefs.highPayoutWeight * 0.8,
-      });
-    }
-
-    // 7. 两个特定骰子组合
-    for (let num1 = 1; num1 <= 6; num1++) {
-      for (let num2 = num1; num2 <= 6; num2++) {
-        allOptions.push({
-          type: BetType.COMBINATION,
-          label: `组合${num1}${num2}`,
-          prob: 0.08,
-          payout: 5,
-          subTarget: [num1, num2],
-          baseWeight: prefs.highPayoutWeight * 1.0,
+    // 检查置信度阈值
+    const chosenProb = chooseBig ? nnBigProb : nnSmallProb;
+    if (chosenProb >= prefs.confidenceThreshold) {
+      // 检查期望收益阈值
+      const chosenEV = chooseBig ? bigEV : smallEV;
+      if (chosenEV >= prefs.expectedValueThreshold) {
+        bets.push({
+          type: chooseBig ? BetType.BIG : BetType.SMALL,
+          label: chooseBig ? '大' : '小',
+          amount: 0, // 金额稍后计算
         });
       }
     }
   }
 
-  // 过滤：放宽置信度要求，让更多类型有机会
-  const validOptions = allOptions.filter(opt =>
-    opt.prob >= prefs.confidenceThreshold * 0.1 && // 从0.3降到0.1
-    expectedValue(opt.prob, opt.payout) >= prefs.expectedValueThreshold * 0.1 // 从0.3降到0.1
-  );
+  if (chooseExotic && total >= 5) {
+    // 押高赔率（围骰、对子、点数）
+    const highPayoutOptions = [
+      { type: BetType.TRIPLE, label: '全圍骰', prob: nnProbs[5], payout: 24 },
+      { type: BetType.SPECIFIC_TRIPLE, label: '围骰', prob: nnProbs[5] / 6, payout: 150 },
+      { type: BetType.DOUBLE, label: '对子', prob: nnProbs[3], payout: 8 },
+    ];
 
-  if (validOptions.length > 0) {
-    // 统计已有下注的重复次数
-    const betCounts: Map<string, number> = new Map();
-    if (existingBetsInfo && existingBetsInfo.length > 0) {
-      existingBetsInfo.forEach(b => {
-        const key = `${b.type}_${b.target || ''}_${(b.subTarget || []).join(',')}`;
-        betCounts.set(key, (betCounts.get(key) || 0) + 1);
-      });
-    }
+    // 根据NN概率选择
+    const validOptions = highPayoutOptions.filter(opt =>
+      opt.prob >= prefs.confidenceThreshold * 0.5 &&
+      expectedValue(opt.prob, opt.payout) >= prefs.expectedValueThreshold * 0.5
+    );
 
-    // 计算每个选项的最终权重 = NN概率 × 基础权重 × 已有下注惩罚
-    const weightedOptions = validOptions.map(opt => {
-      const key = `${opt.type}_${opt.target || ''}_${(opt.subTarget || []).join(',')}`;
-      const existingCount = betCounts.get(key) || 0;
-      // 每个已押的人降低30%权重
-      const penalty = Math.max(0.1, 1 - existingCount * 0.3);
-      // 最终权重 = NN概率 × 基础权重 × 惩罚
-      const finalWeight = opt.prob * opt.baseWeight * penalty;
-      return { ...opt, finalWeight, existingCount };
-    });
-
-    // 按最终权重从高到低排序（理性选择：优先选择权重最高的）
-    weightedOptions.sort((a, b) => b.finalWeight - a.finalWeight);
-
-    // 选择权重最高的选项
-    const bestOption = weightedOptions[0];
-    if (bestOption) {
-      bets.push({
-        type: bestOption.type,
-        target: bestOption.target,
-        subTarget: bestOption.subTarget,
-        label: bestOption.label,
-        amount: 0,
-      });
+    if (validOptions.length > 0) {
+      // 按概率加权随机选择
+      const totalProb = validOptions.reduce((s, o) => s + o.prob, 0);
+      let rand = Math.random() * totalProb;
+      for (const opt of validOptions) {
+        rand -= opt.prob;
+        if (rand <= 0) {
+          let target: number | undefined;
+          if (opt.type === BetType.SPECIFIC_TRIPLE) {
+            target = Math.floor(Math.random() * 6) + 1;
+          } else if (opt.type === BetType.DOUBLE && total >= 5) {
+            // 选择热号对子
+            const numFreq: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
+            history.forEach(r => r.dice.forEach(d => { numFreq[d]++; }));
+            target = Number(Object.entries(numFreq).sort((a, b) => b[1] - a[1])[0][0]);
+          }
+          bets.push({
+            type: opt.type,
+            target,
+            label: target ? `${opt.label} ${target}` : opt.label,
+            amount: 0,
+          });
+          break;
+        }
+      }
     }
   }
 
@@ -367,7 +276,6 @@ export function interpretNNByPersonality(
 
 /**
  * 根据人格计算下注金额（资金管理策略）
- * 所有返回值都确保是整数
  */
 function calculateBetAmountByPersonality(
   personalityId: AIPersonalityId,
@@ -379,7 +287,7 @@ function calculateBetAmountByPersonality(
 
   switch (personalityId) {
     case 'classic':
-      return Math.floor(Math.min(baseUnit * 2, balance * 0.1));
+      return Math.min(baseUnit * 2, balance * 0.1);
 
     case 'madman': // 马丁格尔：输后加倍
       if (state.lastWasWin) {
@@ -387,26 +295,26 @@ function calculateBetAmountByPersonality(
         state.consecutiveLosses = 0;
       } else {
         state.consecutiveLosses++;
-        state.baseBet = Math.floor(Math.min(baseUnit * Math.pow(2, state.consecutiveLosses), balance * 0.3));
+        state.baseBet = Math.min(baseUnit * Math.pow(2, state.consecutiveLosses), balance * 0.3);
       }
-      return Math.floor(Math.min(state.baseBet, balance));
+      return Math.min(state.baseBet, balance);
 
     case 'gambler': // 翻本策略
       if (state.lastWasWin) {
         state.baseBet = baseUnit;
       } else {
         const lostAmount = state.lastBetAmount || baseUnit;
-        state.baseBet = Math.floor(Math.min(lostAmount, balance * 0.25));
+        state.baseBet = Math.min(lostAmount, balance * 0.25);
       }
-      return Math.floor(Math.min(state.baseBet, balance));
+      return Math.min(state.baseBet, balance);
 
     case 'hunter': // 反马丁格尔：赢后加倍
       if (state.lastWasWin) {
-        state.baseBet = Math.floor(Math.min(state.baseBet * 2, balance * 0.2));
+        state.baseBet = Math.min(state.baseBet * 2, balance * 0.2);
       } else {
         state.baseBet = baseUnit;
       }
-      return Math.floor(Math.min(state.baseBet, balance));
+      return Math.min(state.baseBet, balance);
 
     case 'reaper': // 1-3-2-6系统
       if (!state.lastWasWin) {
@@ -415,21 +323,21 @@ function calculateBetAmountByPersonality(
         state.reaperStep = (state.reaperStep + 1) % 4;
       }
       const multipliers = [1, 3, 2, 6];
-      return Math.floor(Math.min(baseUnit * multipliers[state.reaperStep], balance));
+      return Math.min(baseUnit * multipliers[state.reaperStep], balance);
 
     case 'turtle': // 奥斯卡磨盘
       if (state.lastWasWin) {
         state.oscarTarget = Math.min(state.oscarTarget + 1, 5);
       }
-      return Math.floor(Math.min(baseUnit * state.oscarTarget, balance));
+      return Math.min(baseUnit * state.oscarTarget, balance);
 
     case 'blunt_sword': // 达朗贝尔
       if (state.lastWasWin) {
         state.baseBet = Math.max(baseUnit, state.baseBet - baseUnit);
       } else {
-        state.baseBet = Math.floor(Math.min(state.baseBet + baseUnit, balance * 0.15));
+        state.baseBet = Math.min(state.baseBet + baseUnit, balance * 0.15);
       }
-      return Math.floor(Math.min(state.baseBet, balance));
+      return Math.min(state.baseBet, balance);
 
     case 'ascetic': // 固定比例
       return Math.max(10, Math.floor(balance * 0.02));
@@ -440,7 +348,7 @@ function calculateBetAmountByPersonality(
       } else {
         state.fibStep = Math.min(FIBONACCI.length - 1, state.fibStep + 1);
       }
-      return Math.floor(Math.min(baseUnit * FIBONACCI[state.fibStep], balance));
+      return Math.min(baseUnit * FIBONACCI[state.fibStep], balance);
 
     case 'schemer': // 拉布歇尔
       if (state.labouchereSequence.length < 2) {
@@ -457,13 +365,13 @@ function calculateBetAmountByPersonality(
         state.labouchereSequence.push(lastUnits);
       }
       const sum = state.labouchereSequence[0] + state.labouchereSequence[state.labouchereSequence.length - 1];
-      return Math.floor(Math.min(baseUnit * sum, balance));
+      return Math.min(baseUnit * sum, balance);
 
     case 'occultist': // 对冲策略
       return Math.max(10, Math.floor(balance * 0.05));
 
     default:
-      return Math.floor(Math.min(baseUnit, balance));
+      return Math.min(baseUnit, balance);
   }
 }
 
